@@ -7,6 +7,8 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
+
+	"github.com/gorilla/handlers"
 )
 
 type Payload struct {
@@ -24,14 +26,16 @@ func main() {
 	base = os.Args[1]
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", requestHandler)
-	http.ListenAndServe(":8000", mux)
+	http.ListenAndServe(":80", handlers.CompressHandler(mux))
 }
 
 func requestHandler(w http.ResponseWriter, r *http.Request) {
 	uri := r.URL.RequestURI()
 	hash := getMD5Hash(uri)
 	payload, ok := storage[hash]
+	hit := "HIT"
 	if !ok {
+		hit = "MISS"
 		payload, ok = getSource(uri)
 		storage[hash] = payload
 	}
@@ -39,6 +43,7 @@ func requestHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Content-Length", payload.ContentLength)
 	w.Header().Add("Pragma", "public")
 	w.Header().Add("Cache-Control", "max-age=84097, public")
+	w.Header().Add("X-Snap", hit)
 
 	io.WriteString(w, payload.Body)
 }
