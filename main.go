@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"io"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"os"
 	"time"
@@ -18,10 +19,9 @@ import (
 
 // Type used to store network responses in local cache
 type Payload struct {
-	Body          string
-	StatusCode    int
-	ContentType   string
-	ContentLength string
+	Body        string
+	StatusCode  int
+	ContentType string
 }
 
 // Contains local cache
@@ -38,12 +38,13 @@ func main() {
 
 	getArgs()
 
-	io.WriteString(os.Stdout, "Initializing Cache. \n")
+	log.Print("Initializing Cache")
 	c = cache.New(6*time.Hour, 1*time.Hour)
 
-	io.WriteString(os.Stdout, "Handle HTTP. \n")
+	log.Print("Handling HTTP")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", requestHandler)
+
 	http.ListenAndServe(":"+port, handlers.CompressHandler(mux))
 }
 
@@ -65,9 +66,10 @@ func requestHandler(w http.ResponseWriter, r *http.Request) {
 		payload Payload
 	)
 
+	start := time.Now()
+
 	// Get Request URI and output to STDOUT
 	uri := r.URL.RequestURI()
-	io.WriteString(os.Stdout, "["+time.Now().String()+"] "+uri+"\n")
 
 	// Success flag initialized to true
 	hit := "HIT"
@@ -92,13 +94,16 @@ func requestHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Set HTTP headers
 	w.Header().Add("Content-Type", payload.ContentType)
-	w.Header().Add("Content-Length", payload.ContentLength)
 	w.Header().Add("Pragma", "public")
 	w.Header().Add("Cache-Control", "max-age=84097, public")
 	w.Header().Add("X-Snap", hit)
 
 	// Write payload to HTTP response body
 	io.WriteString(w, payload.Body)
+
+	elapsed := time.Since(start)
+
+	log.Print("[" + start.String() + "] " + uri + " (" + elapsed.String() + ")")
 }
 
 // Gets remote content, minifies, and stores in cache
@@ -108,8 +113,10 @@ func getSource(uri string) (Payload, bool) {
 		defer resp.Body.Close()
 		body, err := ioutil.ReadAll(resp.Body)
 		minBody := minifyBody(body)
-		payload := Payload{minBody, resp.StatusCode, resp.Header.Get("Content-Type"), string(len(minBody))}
+		payload := Payload{minBody, resp.StatusCode, resp.Header.Get("Content-Type")}
 		return payload, err == nil
+	} else {
+		panic(err)
 	}
 	return Payload{}, false
 }
