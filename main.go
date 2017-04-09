@@ -8,8 +8,10 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/gorilla/handlers"
+	"github.com/patrickmn/go-cache"
 	"github.com/tdewolff/minify"
 	"github.com/tdewolff/minify/html"
 )
@@ -23,7 +25,7 @@ type Payload struct {
 }
 
 // Contains local cache
-var storage = make(map[string]Payload)
+var c *cache.Cache
 
 // Base URI of remote source
 var base string
@@ -33,7 +35,13 @@ var port = "80"
 
 // Main function, read arguments and serve
 func main() {
+
 	getArgs()
+
+	io.WriteString(os.Stdout, "Initializing Cache. \n")
+	c = cache.New(6*time.Hour, 1*time.Hour)
+
+	io.WriteString(os.Stdout, "Handle HTTP. \n")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", requestHandler)
 	http.ListenAndServe(":"+port, handlers.CompressHandler(mux))
@@ -52,21 +60,44 @@ func getArgs() {
 
 // HTTP handler checks local cache, else uses source
 func requestHandler(w http.ResponseWriter, r *http.Request) {
+	var (
+		found   bool
+		payload Payload
+	)
+
+	// Get Request URI and output to STDOUT
 	uri := r.URL.RequestURI()
-	io.WriteString(os.Stdout, uri+"\n")
-	hash := getMD5Hash(uri)
-	payload, ok := storage[hash]
+	io.WriteString(os.Stdout, "["+time.Now().String()+"] "+uri+"\n")
+
+	// Success flag initialized to true
 	hit := "HIT"
-	if !ok {
+
+	// Calculate a hash value to use as a shorter key for the URIs
+	hash := getMD5Hash(uri)
+
+	// Attempt to retrieve hash key from cache
+	stored, found := c.Get(hash)
+
+	if found {
+		// If the the value is in cache, assign to return value
+		payload = stored.(Payload)
+	} else {
+		// Else get it from source
 		hit = "MISS"
-		payload, ok = getSource(uri)
-		storage[hash] = payload
+		payload, found = getSource(uri)
+		if found {
+			c.Set(hash, payload, cache.NoExpiration)
+		}
 	}
+
+	// Set HTTP headers
 	w.Header().Add("Content-Type", payload.ContentType)
 	w.Header().Add("Content-Length", payload.ContentLength)
 	w.Header().Add("Pragma", "public")
 	w.Header().Add("Cache-Control", "max-age=84097, public")
 	w.Header().Add("X-Snap", hit)
+
+	// Write payload to HTTP response body
 	io.WriteString(w, payload.Body)
 }
 
@@ -77,12 +108,7 @@ func getSource(uri string) (Payload, bool) {
 		defer resp.Body.Close()
 		body, err := ioutil.ReadAll(resp.Body)
 		minBody := minifyBody(body)
-		payload := Payload{
-			minBody,
-			resp.StatusCode,
-			resp.Header.Get("Content-Type"),
-			string(len(minBody)),
-		}
+		payload := Payload{minBody, resp.StatusCode, resp.Header.Get("Content-Type"), string(len(minBody))}
 		return payload, err == nil
 	}
 	return Payload{}, false
