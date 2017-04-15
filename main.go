@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gorilla/handlers"
@@ -41,11 +42,16 @@ func main() {
 	log.Print("Initializing Cache")
 	c = cache.New(6*time.Hour, 1*time.Hour)
 
-	log.Print("Handling HTTP")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", requestHandler)
 
-	http.ListenAndServe(":"+port, handlers.CompressHandler(mux))
+	//  Start HTTP
+	log.Print("Handling HTTP")
+	go startHTTP(mux)
+
+	//  Start HTTPS
+	log.Print("Handling HTTPS")
+	startHTTPS(mux)
 }
 
 // Reads base URI and port
@@ -59,6 +65,27 @@ func getArgs() {
 	}
 }
 
+// Listens via HTTP on specified parameter port
+func startHTTP(mux *http.ServeMux) {
+	err_http := http.ListenAndServe(":"+port, handlers.CompressHandler(mux))
+	if err_http != nil {
+		log.Fatal("Web server (HTTP): ", err_http)
+	}
+}
+
+// Listens via TLS on fixed port 443
+func startHTTPS(mux *http.ServeMux) {
+	err_https := http.ListenAndServeTLS(
+		":443",
+		"ssl/public.crt",
+		"ssl/private.key",
+		mux,
+	)
+	if err_https != nil {
+		log.Fatal("Web server (HTTPS): ", err_https)
+	}
+}
+
 // HTTP handler checks local cache, else uses source
 func requestHandler(w http.ResponseWriter, r *http.Request) {
 	var (
@@ -68,42 +95,53 @@ func requestHandler(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 
+	// Success flag initialized to false
+	hit := "MISS"
+
 	// Get Request URI and output to STDOUT
 	uri := r.URL.RequestURI()
 
-	// Success flag initialized to true
-	hit := "HIT"
+	// Only cache GET requests
+	if strings.ToUpper(r.Method) == "GET" {
 
-	// Calculate a hash value to use as a shorter key for the URIs
-	hash := getMD5Hash(uri)
+		// Calculate a hash value to use as a shorter key for the URIs
+		hash := getMD5Hash(uri)
 
-	// Attempt to retrieve hash key from cache
-	stored, found := c.Get(hash)
+		// Attempt to retrieve hash key from cache
+		stored, found := c.Get(hash)
 
-	if found {
-		// If the the value is in cache, assign to return value
-		payload = stored.(Payload)
-	} else {
-		// Else get it from source
-		hit = "MISS"
-		payload, found = getSource(uri)
 		if found {
-			c.Set(hash, payload, cache.NoExpiration)
+			hit = "HIT"
+			// If the the value is in cache, assign to return value
+			payload = stored.(Payload)
+		} else {
+			// Else get it from source
+			payload, found = getSource(uri)
+			if found {
+				c.Set(hash, payload, cache.NoExpiration)
+			}
 		}
+
+	} else {
+		payload, found = getSource(uri)
 	}
 
-	// Set HTTP headers
-	w.Header().Add("Content-Type", payload.ContentType)
-	w.Header().Add("Pragma", "public")
-	w.Header().Add("Cache-Control", "max-age=84097, public")
-	w.Header().Add("X-Snap", hit)
+	if found {
+		// Set HTTP headers
+		w.Header().Add("Content-Type", payload.ContentType)
+		w.Header().Add("Pragma", "public")
+		w.Header().Add("Cache-Control", "max-age=84097, public")
+		w.Header().Add("X-Snap", hit)
 
-	// Write payload to HTTP response body
-	io.WriteString(w, payload.Body)
+		// Write payload to HTTP response body
+		io.WriteString(w, payload.Body)
+	} else {
+		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+	}
 
 	elapsed := time.Since(start)
 
-	log.Print("[" + start.String() + "] " + uri + " (" + elapsed.String() + ")")
+	log.Print(uri + " (" + elapsed.String() + ")")
 }
 
 // Gets remote content, minifies, and stores in cache
@@ -112,8 +150,11 @@ func getSource(uri string) (Payload, bool) {
 	if err == nil {
 		defer resp.Body.Close()
 		body, err := ioutil.ReadAll(resp.Body)
-		minBody := minifyBody(body)
-		payload := Payload{minBody, resp.StatusCode, resp.Header.Get("Content-Type")}
+		payload := Payload{
+			minifyBody(body),
+			resp.StatusCode,
+			resp.Header.Get("Content-Type"),
+		}
 		return payload, err == nil
 	} else {
 		panic(err)
